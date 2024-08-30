@@ -1,0 +1,671 @@
+##This is a file converter. It supports conversions between PDF, JPEG, PNG, GIF, TIFF, BMP, and SVG formats
+## SVG conversion uses image vectorization (finnicky and computationally intensive)
+##This code is sentinel operated and interactive. Just run the code and in the terminal it will request the file paths and conversion types. You #do not have #to edit any of the code
+
+##To run this code, you must have python #3.12 and an ide #to run it within. 
+##Here is the pip install package line (Gives you all packages needed #to run code)
+  
+  ##pip install Pillow opencv-python svgwrite svglib reportlab pymupdf numpy os fitz
+
+import cv2
+import numpy as np
+from PIL import Image
+import svgwrite
+import os
+import fitz
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPDF, renderPM
+
+# Supported file types
+image_formats = {'JPEG': ['jpeg', 'jpg'], 'PNG': ['png'], 'BMP': ['bmp'], 'GIF': ['gif'], 'TIFF': ['tiff'], 'SVG': ['svg']}
+pdf_format = 'PDF'
+
+def list_supported_formats():
+    print("Supported image formats: ", ', '.join(image_formats.keys()))
+    print("Supported PDF format: ", pdf_format)
+
+def get_files_from_directory(directory, file_extensions):
+    files = []
+    for root, _, filenames in os.walk(directory):
+        for filename in filenames:
+            if any(filename.lower().endswith(ext) for ext in file_extensions):
+                files.append(os.path.join(root, filename))
+    return files
+
+def add_extension_if_missing(file_path, extension):
+    if not file_path.lower().endswith(extension.lower()):
+        file_path += extension
+    return file_path
+
+def convert_image_to_pdf(input_paths, output_path):
+    images = []
+    for input_path in input_paths:
+        input_path = input_path.strip('"')
+        try:
+            image = Image.open(input_path)
+            images.append(image.convert('RGB'))
+        except Exception as e:
+            print(f"Error opening image {input_path}: {e}")
+    if images:
+        output_path = add_extension_if_missing(output_path, '.pdf')
+        images[0].save(output_path, save_all=True, append_images=images[1:])
+        print(f"Images converted to PDF and saved as {output_path}")
+
+def convert_pdf_to_images(input_path, output_folder, output_format='png', num_output_files=1):
+    try:
+        input_path = input_path.strip('"')
+        pdf_document = fitz.open(input_path)
+        total_pages = len(pdf_document)
+        pages_per_file = (total_pages + num_output_files - 1) // num_output_files
+
+        for i in range(num_output_files):
+            images = []
+            for j in range(i * pages_per_file, min((i + 1) * pages_per_file, total_pages)):
+                page = pdf_document.load_page(j)
+                pix = page.get_pixmap()
+                image_path = os.path.join(output_folder, f"page_{j + 1}.{output_format}")
+                pix.save(image_path)
+                images.append(image_path)
+
+            if images:
+                output_image_path = os.path.join(output_folder, f"output_{i + 1}.{output_format}")
+                imgs = [Image.open(img_path) for img_path in images]
+                if output_format.lower() in ['jpeg', 'jpg']:
+                    imgs[0].save(output_image_path, save_all=True, append_images=imgs[1:], quality=95)
+                else:
+                    imgs[0].save(output_image_path, save_all=True, append_images=imgs[1:])
+                for img in imgs:
+                    img.close()
+                for img_path in images:
+                    os.remove(img_path)
+        print(f"PDF converted to {output_format} and saved in {output_folder}")
+    except Exception as e:
+        print(f"Error converting PDF to {output_format}: {e}")
+
+def convert_pdf_to_jpeg(input_path, output_folder, num_output_files=1):
+    convert_pdf_to_images(input_path, output_folder, 'jpeg', num_output_files)
+
+def convert_svg_to_image(input_path, output_path, output_format):
+    try:
+        input_path = input_path.strip('"')
+        drawing = svg2rlg(input_path)
+        output_path = add_extension_if_missing(output_path, f'.{output_format}')
+        renderPM.drawToFile(drawing, output_path, fmt=output_format.upper())
+        print(f"SVG converted to {output_format} and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting SVG to {output_format}: {e}")
+
+def convert_svg_to_pdf(input_path, output_path):
+    try:
+        input_path = input_path.strip('"')
+        drawing = svg2rlg(input_path)
+        output_path = add_extension_if_missing(output_path, '.pdf')
+        renderPDF.drawToFile(drawing, output_path)
+        print(f"SVG converted to PDF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting SVG to PDF: {e}")
+
+##New Vectorize image function with a denoising step
+
+##Tuning vectorize function - threshold1 and 2 are low and high threshold values for canny edge detector
+## lowering threshold 1 and 2 will detect more edges but introduces noise, increasing reduces noise but misses details
+
+## Aperature size - size of sobel kernel used for finding image gradients
+##Must be odd number. Larger values detect wider edges but miss smaller details
+
+##cv2fastN1meansdenoising individual parameters
+
+##H - parameter regulating filter strength. Big H value perfectly removes noise but also removes image details
+##Lowering preserves details at cost of more noise
+
+##Template window size - size of pixels of the window that is used to compute weighted avg for pixel
+## Smaller sizes are faster but might not remove noise effectively. Larger sizes are thorough but slow
+
+##Search window size - size in pixels of window used to search for similar blocks
+##larger gives better results but becomes computationally expensive
+##Old vectorize image function
+
+
+##New Vectorize image function
+
+def vectorize_image(input_path, output_path, k=None):
+    try:
+        # Load image using OpenCV
+        image = cv2.imread(input_path)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Denoise the image (adjust h for more or less noise reduction)
+        denoised = cv2.fastNlMeansDenoising(gray, None, h=25, templateWindowSize=15, searchWindowSize=1000)
+
+        # If k is not provided, calculate it based on the number of unique colors
+        if k is None:
+            k = estimate_optimal_k(image)
+
+        # Apply color quantization to reduce the number of colors
+        quantized_image = color_quantization(image, k)
+
+        # Edge detection using Canny (adjust thresholds for better edge detection)
+        edges = cv2.Canny(denoised, threshold1=2, threshold2=6, apertureSize=3)
+
+        # Find contours in the edge map
+        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE) ##Can also be chain approx none/simple
+
+        # Create an SVG drawing
+        dwg = svgwrite.Drawing(output_path, profile='tiny')
+
+        height, width = gray.shape
+
+        for contour in contours:
+            if len(contour) > 1:
+                # Create path
+                path_data = []
+                for point in contour:
+                    x, y = point[0]
+                    path_data.append(f"L{x},{y}")
+                path_data[0] = path_data[0].replace('L', 'M')
+
+                # Get the color for the contour area using the quantized image
+                mask = np.zeros_like(gray)
+                cv2.drawContours(mask, [contour], -1, color=255, thickness=cv2.FILLED)
+                mean_color = cv2.mean(quantized_image, mask=mask)[:3]
+                color = svgwrite.rgb(int(mean_color[2]), int(mean_color[1]), int(mean_color[0]))
+
+                # Add path to SVG drawing
+                dwg.add(dwg.path(d=' '.join(path_data), fill=color, stroke=color))
+
+        dwg.save()
+        print(f"Image {input_path} converted to SVG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to SVG: {e}")
+
+def color_quantization(image, k):
+    """Apply color quantization using k-means clustering."""
+    Z = image.reshape((-1, 3))
+    Z = np.float32(Z)
+
+    # Define criteria and apply kmeans()
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10000, 0.0001)
+    _, labels, centers = cv2.kmeans(Z, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS) ##Can also be random centers
+
+    # Convert back into uint8 and make original image
+    centers = np.uint8(centers)
+    res = centers[labels.flatten()]
+    res2 = res.reshape((image.shape))
+
+    return res2
+
+def estimate_optimal_k(image):
+    """Estimate the optimal number of color clusters (k) based on unique colors in the image."""
+    # Reshape the image to a 2D array of pixels
+    pixels = image.reshape(-1, image.shape[-1])
+
+    # Get the unique colors and count them
+    unique_colors = np.unique(pixels, axis=0)
+
+    num_unique_colors = len(unique_colors)
+
+    # Cap the k value to avoid excessive computation
+    max_k = 128 # Or any other value you prefer as the upper limit
+    k = min(num_unique_colors, max_k)
+
+    print(f"Estimated optimal k: {k} (based on {num_unique_colors} unique colors)")
+
+    return k
+
+
+
+
+def convert_jpeg_to_svg(input_path, output_path):
+    vectorize_image(input_path, output_path)
+
+def convert_png_to_svg(input_path, output_path):
+    vectorize_image(input_path, output_path)
+
+def convert_bmp_to_svg(input_path, output_path):
+    vectorize_image(input_path, output_path)
+
+def convert_tiff_to_svg(input_path, output_path):
+    vectorize_image(input_path, output_path)
+
+def convert_gif_to_svg(input_path, output_path):
+    vectorize_image(input_path, output_path)
+
+def convert_pdf_to_svg(input_path, output_folder):
+    try:
+        import fitz
+        input_path = input_path.strip('"')
+        pdf_document = fitz.open(input_path)
+        for page_num in range(len(pdf_document)):
+            page = pdf_document.load_page(page_num)
+            pix = page.get_pixmap()
+            temp_img_path = os.path.join(output_folder, f"page_{page_num + 1}.png")
+            pix.save(temp_img_path)
+            output_svg_path = os.path.join(output_folder, f"page_{page_num + 1}.svg")
+            vectorize_image(temp_img_path, output_svg_path)
+            os.remove(temp_img_path)
+        print(f"PDF converted to SVG and saved in {output_folder}")
+    except Exception as e:
+        print(f"Error converting PDF to SVG: {e}")
+
+def convert_png_to_pdf(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        pdf_bytes = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.pdf')
+        pdf_bytes.save(output_path)
+        print(f"PNG {input_path} converted to PDF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PDF: {e}")
+
+def convert_jpeg_to_pdf(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        pdf_bytes = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.pdf')
+        pdf_bytes.save(output_path)
+        print(f"JPEG {input_path} converted to PDF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PDF: {e}")
+
+def convert_bmp_to_pdf(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        pdf_bytes = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.pdf')
+        pdf_bytes.save(output_path)
+        print(f"BMP {input_path} converted to PDF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PDF: {e}")
+
+def convert_gif_to_pdf(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        pdf_bytes = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.pdf')
+        pdf_bytes.save(output_path)
+        print(f"GIF {input_path} converted to PDF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PDF: {e}")
+
+def convert_tiff_to_pdf(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        pdf_bytes = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.pdf')
+        pdf_bytes.save(output_path)
+        print(f"TIFF {input_path} converted to PDF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PDF: {e}")
+
+def convert_png_to_jpeg(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        image = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.jpg')
+        image.save(output_path, format='JPEG')
+        print(f"PNG {input_path} converted to JPEG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to JPEG: {e}")
+
+def convert_png_to_bmp(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.bmp')
+        image.save(output_path, format='BMP')
+        print(f"PNG {input_path} converted to BMP and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to BMP: {e}")
+
+def convert_png_to_gif(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.gif')
+        image.save(output_path, format='GIF')
+        print(f"PNG {input_path} converted to GIF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to GIF: {e}")
+
+def convert_png_to_tiff(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.tiff')
+        image.save(output_path, format='TIFF')
+        print(f"PNG {input_path} converted to TIFF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to TIFF: {e}")
+
+def convert_jpeg_to_png(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.png')
+        image.save(output_path, format='PNG')
+        print(f"JPEG {input_path} converted to PNG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PNG: {e}")
+
+def convert_jpeg_to_bmp(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.bmp')
+        image.save(output_path, format='BMP')
+        print(f"JPEG {input_path} converted to BMP and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to BMP: {e}")
+
+def convert_jpeg_to_gif(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.gif')
+        image.save(output_path, format='GIF')
+        print(f"JPEG {input_path} converted to GIF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to GIF: {e}")
+
+def convert_jpeg_to_tiff(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.tiff')
+        image.save(output_path, format='TIFF')
+        print(f"JPEG {input_path} converted to TIFF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to TIFF: {e}")
+
+def convert_bmp_to_jpeg(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        image = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.jpg')
+        image.save(output_path, format='JPEG')
+        print(f"BMP {input_path} converted to JPEG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to JPEG: {e}")
+
+def convert_bmp_to_png(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.png')
+        image.save(output_path, format='PNG')
+        print(f"BMP {input_path} converted to PNG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PNG: {e}")
+
+def convert_bmp_to_gif(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.gif')
+        image.save(output_path, format='GIF')
+        print(f"BMP {input_path} converted to GIF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to GIF: {e}")
+
+def convert_bmp_to_tiff(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.tiff')
+        image.save(output_path, format='TIFF')
+        print(f"BMP {input_path} converted to TIFF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to TIFF: {e}")
+
+def convert_gif_to_jpeg(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        image = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.jpg')
+        image.save(output_path, format='JPEG')
+        print(f"GIF {input_path} converted to JPEG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to JPEG: {e}")
+
+def convert_gif_to_png(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.png')
+        image.save(output_path, format='PNG')
+        print(f"GIF {input_path} converted to PNG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PNG: {e}")
+
+def convert_gif_to_bmp(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.bmp')
+        image.save(output_path, format='BMP')
+        print(f"GIF {input_path} converted to BMP and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to BMP: {e}")
+
+def convert_gif_to_tiff(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.tiff')
+        image.save(output_path, format='TIFF')
+        print(f"GIF {input_path} converted to TIFF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to TIFF: {e}")
+
+def convert_tiff_to_jpeg(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        image = image.convert('RGB')
+        output_path = add_extension_if_missing(output_path, '.jpg')
+        image.save(output_path, format='JPEG')
+        print(f"TIFF {input_path} converted to JPEG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to JPEG: {e}")
+
+def convert_tiff_to_png(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.png')
+        image.save(output_path, format='PNG')
+        print(f"TIFF {input_path} converted to PNG and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to PNG: {e}")
+
+def convert_tiff_to_bmp(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.bmp')
+        image.save(output_path, format='BMP')
+        print(f"TIFF {input_path} converted to BMP and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to BMP: {e}")
+
+def convert_tiff_to_gif(input_path, output_path):
+    try:
+        image = Image.open(input_path)
+        output_path = add_extension_if_missing(output_path, '.gif')
+        image.save(output_path, format='GIF')
+        print(f"TIFF {input_path} converted to GIF and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting {input_path} to GIF: {e}")
+
+def convert_svg_to_jpeg(input_path, output_path):
+    convert_svg_to_image(input_path, output_path, 'jpeg')
+
+def convert_svg_to_png(input_path, output_path):
+    convert_svg_to_image(input_path, output_path, 'png')
+
+def convert_svg_to_bmp(input_path, output_path):
+    convert_svg_to_image(input_path, output_path, 'bmp')
+
+def convert_svg_to_gif(input_path, output_path):
+    convert_svg_to_image(input_path, output_path, 'gif')
+
+def convert_svg_to_tiff(input_path, output_path):
+    convert_svg_to_image(input_path, output_path, 'tiff')
+
+def convert_images_to_single_image(input_paths, output_path, output_format):
+    try:
+        images = [Image.open(path).convert('RGBA') for path in input_paths]
+        output_image = images[0]
+        for image in images[1:]:
+            output_image.paste(image, (0, 0), image)
+        output_path = add_extension_if_missing(output_path, f'.{output_format}')
+        output_image.save(output_path, format=output_format.upper())
+        print(f"Images {input_paths} converted to a single {output_format} and saved as {output_path}")
+    except Exception as e:
+        print(f"Error converting images to {output_format}: {e}")
+
+
+def sort_files(file_paths, sort_by):
+    if sort_by == 'name':
+        return sorted(file_paths, key=lambda x: os.path.basename(x).lower())
+    elif sort_by == 'date':
+        return sorted(file_paths, key=lambda x: os.path.getmtime(x))
+    return file_paths
+
+def main():
+    print("Starting script...")  # Debugging statement
+    list_supported_formats()
+    
+    input_method = input("Would you like to input files manually or by directory? (manual/directory): ").strip().lower()
+    print(f"Input method selected: {input_method}")  # Debugging statement
+    output_folder = input("Enter the path to the folder to save the output files: ").strip('"')
+    print(f"Output folder: {output_folder}")  # Debugging statement
+    
+    conversion_map = {
+        'PNG': {
+            'PDF': convert_png_to_pdf,
+            'JPEG': convert_png_to_jpeg,
+            'BMP': convert_png_to_bmp,
+            'GIF': convert_png_to_gif,
+            'TIFF': convert_png_to_tiff,
+            'SVG': convert_png_to_svg,
+        },
+        'JPEG': {
+            'PDF': convert_jpeg_to_pdf,
+            'PNG': convert_jpeg_to_png,
+            'BMP': convert_jpeg_to_bmp,
+            'GIF': convert_jpeg_to_gif,
+            'TIFF': convert_jpeg_to_tiff,
+            'SVG': convert_jpeg_to_svg,
+        },
+        'SVG': {
+            'PDF': convert_svg_to_pdf,
+            'JPEG': convert_svg_to_jpeg,
+            'PNG': convert_svg_to_png,
+            'BMP': convert_svg_to_bmp,
+            'GIF': convert_svg_to_gif,
+            'TIFF': convert_svg_to_tiff,
+        },
+        'BMP': {
+            'PDF': convert_bmp_to_pdf,
+            'JPEG': convert_bmp_to_jpeg,
+            'PNG': convert_bmp_to_png,
+            'GIF': convert_bmp_to_gif,
+            'TIFF': convert_bmp_to_tiff,
+            'SVG': convert_bmp_to_svg,
+        },
+        'GIF': {
+            'PDF': convert_gif_to_pdf,
+            'JPEG': convert_gif_to_jpeg,
+            'PNG': convert_gif_to_png,
+            'BMP': convert_gif_to_bmp,
+            'TIFF': convert_gif_to_tiff,
+            'SVG': convert_gif_to_svg,
+        },
+        'TIFF': {
+            'PDF': convert_tiff_to_pdf,
+            'JPEG': convert_tiff_to_jpeg,
+            'PNG': convert_tiff_to_png,
+            'BMP': convert_tiff_to_bmp,
+            'GIF': convert_tiff_to_gif,
+            'SVG': convert_tiff_to_svg,
+        },
+        'PDF': {
+            'PNG': lambda inp, out: convert_pdf_to_images(inp, output_folder, 'png'),
+            'JPEG': lambda inp, out: convert_pdf_to_jpeg(inp, output_folder),
+            'SVG': lambda inp, out: convert_pdf_to_svg(inp, output_folder),
+            'BMP': lambda inp, out: convert_pdf_to_images(inp, output_folder, 'bmp'),
+            'GIF': lambda inp, out: convert_pdf_to_images(inp, output_folder, 'gif'),
+            'TIFF': lambda inp, out: convert_pdf_to_images(inp, output_folder, 'tiff'),
+        }
+    }
+    
+    if input_method == 'manual':
+        print("Manual mode selected.")  # Debugging statement
+        input_format = input("Enter the input file format (e.g., JPEG, PNG, PDF, SVG): ").upper().strip('"')
+        output_format = input("Enter the desired output file format (e.g., PDF, PNG, SVG): ").upper().strip('"')
+        
+        input_paths = input("Enter the paths to the input files, separated by commas: ").strip('"').split(',')
+        num_output_files_str = input("Enter the number of output files (if converting to images from PDF, this divides pages): ").strip()
+
+        if num_output_files_str:
+            num_output_files = int(num_output_files_str)
+        else:
+            num_output_files = 1  # Default value if input is empty
+
+        print(f"Number of output files: {num_output_files}")  # Debugging statement
+        
+        if len(input_paths) > 1:
+            base_output_name = os.path.join(output_folder, input("Enter the desired base name for the output files (without extension): ").strip('"'))
+            for idx, input_path in enumerate(input_paths):
+                output_path = f"{base_output_name}{idx+1}.{output_format.lower()}"
+                if input_format in conversion_map and output_format in conversion_map[input_format]:
+                    conversion_map[input_format][output_format](input_path, output_path)
+                else:
+                    print(f"Unsupported conversion type from {input_format} to {output_format}.")
+                    return
+        else:
+            input_path = input_paths[0].strip()
+            output_path = os.path.join(output_folder, input("Enter the desired file name for the output (without extension): ").strip('"'))
+            output_path = add_extension_if_missing(output_path, f'.{output_format.lower()}')
+
+            if input_format in conversion_map and output_format in conversion_map[input_format]:
+                conversion_map[input_format][output_format](input_path, output_path)
+            else:
+                print("Unsupported conversion type. Please check the supported formats and try again.")
+    
+    elif input_method == 'directory':
+        print("Directory mode selected.")  # Debugging statement
+        input_directory = input("Enter the path to the directory containing input files: ").strip('"')
+        input_format = input("Enter the input file format (e.g., JPEG, PNG, PDF, SVG): ").upper().strip('"')
+        output_format = input("Enter the desired output file format (e.g., PDF, PNG, SVG): ").upper().strip('"')
+        sort_by = input("How would you like to sort the files? (name/date): ").strip().lower()
+        num_output_files_str = input("Enter the number of output files (must be a divisor of the number of input files): ").strip()
+
+        if num_output_files_str:
+            num_output_files = int(num_output_files_str)
+        else:
+            num_output_files = 1  # Default value if input is empty
+        
+        input_paths = get_files_from_directory(input_directory, image_formats.get(input_format, [input_format.lower()]))
+        if not input_paths:
+            print(f"No files with the format {input_format} found in the directory.")
+            return
+        
+        if len(input_paths) % num_output_files != 0:
+            print(f"Number of output files must be a divisor of the number of input files. Found {len(input_paths)} input files.")
+            return
+        
+        sorted_input_paths = sort_files(input_paths, sort_by)
+        
+        base_output_name = input("Enter the base name for the output files (without extension): ").strip('"')
+        
+        for i in range(num_output_files):
+            start_idx = i * (len(sorted_input_paths) // num_output_files)
+            end_idx = (i + 1) * (len(sorted_input_paths) // num_output_files)
+            subset_input_paths = sorted_input_paths[start_idx:end_idx]
+            
+            output_path = os.path.join(output_folder, f"{base_output_name}{i+1}")
+            
+            if len(subset_input_paths) > 1 and output_format in ['PNG', 'JPEG', 'JPG']:
+                convert_images_to_single_image(subset_input_paths, output_path, output_format)
+            else:
+                for input_path in subset_input_paths:
+                    individual_output_path = add_extension_if_missing(output_path, f'.{output_format.lower()}')
+
+                    if input_format in conversion_map and output_format in conversion_map[input_format]:
+                        conversion_map[input_format][output_format](input_path, individual_output_path)
+                    else:
+                        print(f"Unsupported conversion type from {input_format} to {output_format}.")
+                        return
+    else:
+        print("Invalid input method. Please enter 'manual' or 'directory'.")
+    
+    input("Press Enter to exit...")  # Pause before exiting to allow users to see the output
+
+if __name__ == "__main__":
+    main()
