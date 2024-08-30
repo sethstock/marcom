@@ -1,0 +1,61 @@
+##This code increases image DPI and is sentinel operated. Just follow the prompts in the terminal after pasting the code into your ide and running it
+##It will ask for a file, your desired DPI, the output folder, and for you #to name the file (with an extension)
+##Automatically resizes images based on the new DPI
+
+##here are the packages for install
+##pip install Pillow
+
+import os
+from PIL import Image
+
+def increase_dpi(input_path, output_path, target_dpi):
+    try:
+        with Image.open(input_path) as img:
+            # Calculate the new size based on the target DPI and current DPI
+            original_dpi = img.info.get('dpi', (72, 72))  # Default to 72 DPI if not available
+            original_width, original_height = img.size
+            new_width = int(original_width * (target_dpi / original_dpi[0]))
+            new_height = int(original_height * (target_dpi / original_dpi[1]))
+            
+            # Resize the image to increase its resolution
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+            
+            # Save the image with the new DPI and resolution
+            output_extension = os.path.splitext(output_path)[1].lower()
+            if output_extension not in ['.jpg', '.jpeg', '.png', '.pdf', '.heic', '.tiff', '.bmp', '.gif']:
+                output_path += img.format.lower() if img.format else ".jpg"  # Default to .jpg if format is unknown
+            
+            img.save(output_path, dpi=(target_dpi, target_dpi))
+            print(f"Image processed and saved as {output_path} with {target_dpi} DPI and resolution of {new_width}x{new_height} pixels.")
+    except Exception as e:
+        print(f"Error processing {input_path}: {e}")
+
+def sanitize_path(path):
+    return path.strip('"').strip()
+
+def main():
+    # Ask the user for input file path
+    input_path = sanitize_path(input("Enter the input file path: ").strip())
+    
+    # Ask the user for desired DPI
+    target_dpi = int(input("Enter the desired DPI (e.g., 300): ").strip())
+    
+    # Ask the user for output directory
+    output_directory = sanitize_path(input("Enter the output directory: ").strip())
+    
+    # Ensure the output directory exists
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+    
+    # Ask the user for the output file name
+    output_file_name = sanitize_path(input("Enter the output file name (with extension, e.g., image.jpg): ").strip())
+    if not os.path.splitext(output_file_name)[1]:  # If no extension is provided, use the input file's extension
+        output_file_name += os.path.splitext(input_path)[1]
+    
+    output_path = os.path.join(output_directory, output_file_name)
+    
+    # Process the image
+    increase_dpi(input_path, output_path, target_dpi)
+
+if __name__ == "__main__":
+    main()
